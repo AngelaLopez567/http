@@ -3,10 +3,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define PORT "8000"
 #define MAX_NB_QUEUED_CONNECTIONS 1024
 #define BUFFER_SIZE 1000
+#define DOCUMENT_NOT_FOUND_MESSAGE "<!DOCTYPE html> <html> <head> <title> Error </title> </head> <body> <h1> The requested document does not exist </h1> </body> </html>"
 
 int main() {
 
@@ -44,31 +48,68 @@ int main() {
             break;
         }
 
-        printf("Unable to create or bind socket");
+        printf("Unable to create or bind socket\n");
         exit(EXIT_FAILURE);
 
     }
 
     if (listen(initial_socket_fd, MAX_NB_QUEUED_CONNECTIONS) == -1) {
-        printf("Failed to listen");
+        printf("Failed to listen\n");
         exit(EXIT_FAILURE);
     }
 
-    while(1){
+    while (1) {
         socklen_t peer_address_length = sizeof peer_address;
-        int peer_fd = accept(initial_socket_fd, &peer_address, &peer_address_length );
-        if( peer_fd == -1 ){
+        int peer_fd = accept(initial_socket_fd, &peer_address, &peer_address_length);
+        if (peer_fd == -1) {
             printf("Failed to accept connection \n");
             continue;
         }
         printf("connection occured\n");
 
-       long nb_bytes_read = recv(peer_fd, &peer_communication_buffer, BUFFER_SIZE, 0);
-        if(nb_bytes_read == -1){
+        long nb_bytes_read = recv(peer_fd, &peer_communication_buffer, BUFFER_SIZE, 0);
+        if (nb_bytes_read == -1) {
             printf("An error occured while reading bytes from the peer communication buffer\n");
             continue;
         }
+        if (nb_bytes_read == 0) {
+            printf("Peer socket has shutdown\n");
+            continue;
+        }
         printf("Read %zd bytes from buffer\n", nb_bytes_read);
-    }
 
+        /* parse request which should be GET document_address */
+        char *token = strtok(peer_communication_buffer, " ");
+        if (strncmp(token, "GET", sizeof "GET") != 0) {
+            printf("Missing GET at the start of the http request\n");
+            continue;
+        }
+        token = strtok(NULL, " ");
+        printf("Requested document %s\n", token);
+        /* TODO check for \r\n  */
+        char requested_document_path[1000] = "static/";
+        int requested_document_file_descriptor = open(strncat(requested_document_path, token, 990), O_RDONLY);
+
+        if (requested_document_file_descriptor == -1) {
+            char error_message_buffer[1000] = DOCUMENT_NOT_FOUND_MESSAGE;
+            printf("Error trying to access requested document\n");
+            send(peer_fd, error_message_buffer, strlen(error_message_buffer), 0);
+            close(peer_fd);
+            continue;
+        }
+        printf("Found the requested document\n");
+        /* if it exists, return it */
+
+        char document_read_buffer[500];
+        ssize_t nb_bytes_read_document = 1;
+        ssize_t nb_bytes_sent = 1;
+        while (nb_bytes_read_document != 0 && nb_bytes_read_document != -1 && nb_bytes_sent != 0 &&
+               nb_bytes_sent != -1) {
+            nb_bytes_read_document = read(requested_document_file_descriptor, document_read_buffer, 500);
+            printf("nb_bytes_read_document %zd\n", nb_bytes_read_document);
+            nb_bytes_sent = send(peer_fd, document_read_buffer, nb_bytes_read_document, 0);
+            printf("nb_bytes_sent %zd\n", nb_bytes_sent);
+        }
+        close(peer_fd);
+    }
 }
